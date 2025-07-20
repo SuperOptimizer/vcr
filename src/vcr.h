@@ -1,12 +1,45 @@
 #pragma once
 
-#include <stdint.h>
+
+#include <ctype.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <memory.h>
 #include <string.h>
+#include <blosc2.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <errno.h>
+#include <float.h>
+#include <stdint.h>
+#include <math.h>
+#include <stdbool.h>
+#include <assert.h>
+#include <time.h>
 
 #include "json.h"
+
+
+#ifdef NDEBUG
+#define ASSERT(expr, msg, ...) ((void)0)
+#else
+#define ASSERT(expr, msg, ...) do{if(!(expr)){fprintf(stderr,msg __VA_OPT__(,)#__VA_ARGS__); assert_fail_with_backtrace(#expr, __FILE__, __LINE__, __func__);}}while(0)
+#endif
+
+
+typedef enum log_level {
+  LOG_INFO,
+  LOG_WARN,
+  LOG_ERROR,
+  LOG_FATAL
+} log_level;
+
+#define LOG_INFO(...) log_msg(LOG_INFO, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define LOG_WARN(...) log_msg(LOG_WARN, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define LOG_ERROR(...) log_msg(LOG_ERROR, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define LOG_FATAL(...) log_msg(LOG_FATAL, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+
+
 
 typedef uint8_t u8;
 typedef int8_t s8;
@@ -23,15 +56,15 @@ typedef double f64;
 #define purefunc __attribute__((pure))
 #define constfunc __attribute__((const))
 
-constexpr s32 CHUNK_SIZE = 128;
+constexpr s32 CHUNK_LEN = 128;
 
 typedef enum err {
   OK = 0,
   FAIL = -1
 } err;
 
-typedef f32 chunk[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
-typedef f32 slice[CHUNK_SIZE][CHUNK_SIZE];
+typedef u8 chunk[CHUNK_LEN][CHUNK_LEN][CHUNK_LEN];
+typedef u8 slice[CHUNK_LEN][CHUNK_LEN];
 
 typedef struct volume {
   s32 z, y, x;
@@ -61,5 +94,19 @@ typedef struct zarrinfo {
   s32 zarr_format;
 } zarrinfo;
 
-// Function declarations
-zarrinfo parse_zarr_json(const char* json_string);
+
+// util
+void print_backtrace(void);
+void log_msg(log_level level, const char* file, const char* func, int line, const char* fmt, ...);
+void print_assert_details(const char* expr, const char* file, int line, const char* func);
+void assert_fail_with_backtrace(const char* expr, const char* file, int line, const char* func);
+bool path_exists(const char *path);
+char* read_file(const char* filepath);
+
+// chunk
+static inline chunk* chunk_new() {return malloc(CHUNK_LEN*CHUNK_LEN*CHUNK_LEN);}
+static inline void chunk_free(chunk* c){free(c);}
+
+// zarr
+zarrinfo zarr_parse_zarray(const char* json_string);
+chunk* zarr_read_chunk(char* path, zarrinfo metadata);
