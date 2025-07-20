@@ -1,0 +1,15 @@
+[submodule "thirdparty/Nuklear"]
+	path = thirdparty/Nuklear
+	url = https://github.com/Immediate-Mode-UI/Nuklear.git
+[submodule "thirdparty/sokol"]
+	path = thirdparty/sokol
+	url = https://github.com/floooh/sokol.git
+[submodule "thirdparty/tgc"]
+	path = thirdparty/tgc
+	url = https://github.com/orangeduck/tgc.git
+[submodule "thirdparty/json.h"]
+	path = thirdparty/json.h
+	url = https://github.com/sheredom/json.h.git
+[submodule "thirdparty/sokol-samples"]
+	path = thirdparty/sokol-samples
+	url = https://github.com/floooh/sokol-samples.git
