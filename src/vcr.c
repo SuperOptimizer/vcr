@@ -46,6 +46,7 @@ typedef struct {
     // 3D rendering state
     sgl_context sgl_ctx_3d;
     sgl_pipeline sgl_pip_3d;
+    sgl_pipeline sgl_pip_transparent;  // Pipeline for transparent objects
     
     // Mesh data from marching cubes
     mesh current_mesh;
@@ -234,12 +235,12 @@ static void load_zarr_array(const char* zarr_path) {
 static void init(void) {
     // Initialize app state first
     memset(&app_state, 0, sizeof(app_state));
-    sprintf(app_state.info_text, "Volume Cartographer Ready");
+    sprintf(app_state.info_text, "Volume Cartographer Reloaded Ready");
     strcpy(app_state.zarr_path, "");
     
     // Initialize chunk parameters
     for (int i = 0; i < 3; i++) {
-        app_state.chunk_offset[i] = 0;
+        app_state.chunk_offset[i] = 1024;  // Default offset into zarr volume
         app_state.chunk_size[i] = CHUNK_LEN;
         app_state.current_slice[i] = 0;
         app_state.slice_images_created[i] = false;
@@ -305,6 +306,22 @@ static void init(void) {
             .write_enabled = true,
             .compare = SG_COMPAREFUNC_LESS_EQUAL,
         },
+    });
+    
+    // Create pipeline for transparent objects (slice planes)
+    app_state.sgl_pip_transparent = sgl_context_make_pipeline(app_state.sgl_ctx_3d, &(sg_pipeline_desc){
+        .cull_mode = SG_CULLMODE_NONE,
+        .depth = {
+            .write_enabled = false,  // Don't write to depth buffer for transparent objects
+            .compare = SG_COMPAREFUNC_LESS_EQUAL,
+        },
+        .colors[0] = {
+            .blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            }
+        }
     });
     
     // Create sokol-nuklear image wrapper for render target
@@ -381,8 +398,8 @@ static void render_3d_view(void) {
             dot = fmaxf(0.0f, dot); // Clamp to positive values
             
             // Apply lighting with ambient component
-            float ambient = 0.3f;
-            float diffuse = 0.7f;
+            float ambient = 0.5f;  // Increased from 0.3f for brighter scene
+            float diffuse = 0.6f;  // Slightly reduced to compensate for higher ambient
             float lighting = ambient + diffuse * dot;
             
             // Apply lighting to vertex colors
@@ -402,6 +419,88 @@ static void render_3d_view(void) {
         sgl_end();
     }
     
+    // Draw slice planes as semi-transparent quads
+    if (app_state.loaded_chunk) {
+        // Switch to transparent pipeline
+        sgl_load_pipeline(app_state.sgl_pip_transparent);
+        
+        float x = (float)app_state.current_slice[2];
+        float y = (float)app_state.current_slice[1];
+        float z = (float)app_state.current_slice[0];
+        
+        // XY plane (constant Z) - blue tint
+        sgl_begin_quads();
+        sgl_c4f(0.2f, 0.3f, 0.8f, 0.5f);  // Increased alpha from 0.3f to 0.5f
+        sgl_v3f(0.0f, 0.0f, z);
+        sgl_v3f(CHUNK_LEN, 0.0f, z);
+        sgl_v3f(CHUNK_LEN, CHUNK_LEN, z);
+        sgl_v3f(0.0f, CHUNK_LEN, z);
+        sgl_end();
+        
+        // XZ plane (constant Y) - green tint
+        sgl_begin_quads();
+        sgl_c4f(0.2f, 0.8f, 0.3f, 0.5f);  // Increased alpha from 0.3f to 0.5f
+        sgl_v3f(0.0f, y, 0.0f);
+        sgl_v3f(CHUNK_LEN, y, 0.0f);
+        sgl_v3f(CHUNK_LEN, y, CHUNK_LEN);
+        sgl_v3f(0.0f, y, CHUNK_LEN);
+        sgl_end();
+        
+        // YZ plane (constant X) - red tint
+        sgl_begin_quads();
+        sgl_c4f(0.8f, 0.2f, 0.3f, 0.5f);  // Increased alpha from 0.3f to 0.5f
+        sgl_v3f(x, 0.0f, 0.0f);
+        sgl_v3f(x, CHUNK_LEN, 0.0f);
+        sgl_v3f(x, CHUNK_LEN, CHUNK_LEN);
+        sgl_v3f(x, 0.0f, CHUNK_LEN);
+        sgl_end();
+        
+        // Draw intersection lines where planes meet (more opaque)
+        sgl_begin_lines();
+        sgl_c4f(1.0f, 1.0f, 0.0f, 0.8f);  // Yellow, more opaque
+        
+        // XY-XZ intersection (along X axis at y,z)
+        sgl_v3f(0.0f, y, z);
+        sgl_v3f(CHUNK_LEN, y, z);
+        
+        // XY-YZ intersection (along Y axis at x,z)
+        sgl_v3f(x, 0.0f, z);
+        sgl_v3f(x, CHUNK_LEN, z);
+        
+        // XZ-YZ intersection (along Z axis at x,y)
+        sgl_v3f(x, y, 0.0f);
+        sgl_v3f(x, y, CHUNK_LEN);
+        sgl_end();
+        
+        // Draw intersection point as a small sphere (using a cube for simplicity)
+        sgl_begin_quads();
+        sgl_c4f(1.0f, 1.0f, 1.0f, 0.9f);  // White, nearly opaque
+        float s = 2.0f; // Size of the intersection marker
+        
+        // Front face
+        sgl_v3f(x-s, y-s, z+s); sgl_v3f(x+s, y-s, z+s);
+        sgl_v3f(x+s, y+s, z+s); sgl_v3f(x-s, y+s, z+s);
+        // Back face
+        sgl_v3f(x-s, y-s, z-s); sgl_v3f(x+s, y-s, z-s);
+        sgl_v3f(x+s, y+s, z-s); sgl_v3f(x-s, y+s, z-s);
+        // Top face
+        sgl_v3f(x-s, y+s, z-s); sgl_v3f(x+s, y+s, z-s);
+        sgl_v3f(x+s, y+s, z+s); sgl_v3f(x-s, y+s, z+s);
+        // Bottom face
+        sgl_v3f(x-s, y-s, z-s); sgl_v3f(x+s, y-s, z-s);
+        sgl_v3f(x+s, y-s, z+s); sgl_v3f(x-s, y-s, z+s);
+        // Right face
+        sgl_v3f(x+s, y-s, z-s); sgl_v3f(x+s, y-s, z+s);
+        sgl_v3f(x+s, y+s, z+s); sgl_v3f(x+s, y+s, z-s);
+        // Left face
+        sgl_v3f(x-s, y-s, z-s); sgl_v3f(x-s, y-s, z+s);
+        sgl_v3f(x-s, y+s, z+s); sgl_v3f(x-s, y+s, z-s);
+        sgl_end();
+        
+        // Restore the original pipeline for solid objects
+        sgl_load_pipeline(app_state.sgl_pip_3d);
+    }
+    
     // Draw coordinate axes for reference
     sgl_begin_lines();
     // X axis - red
@@ -416,18 +515,6 @@ static void render_3d_view(void) {
     sgl_c3f(0.0f, 0.0f, 1.0f);
     sgl_v3f(0.0f, 0.0f, 0.0f);
     sgl_v3f(0.0f, 0.0f, CHUNK_LEN);
-    sgl_end();
-    
-    // Draw current position indicator
-    sgl_begin_lines();
-    sgl_c3f(1.0f, 1.0f, 0.0f);  // Yellow
-    float x = app_state.current_slice[2];
-    float y = app_state.current_slice[1];
-    float z = app_state.current_slice[0];
-    // Small cross at current position
-    sgl_v3f(x-5, y, z); sgl_v3f(x+5, y, z);
-    sgl_v3f(x, y-5, z); sgl_v3f(x, y+5, z);
-    sgl_v3f(x, y, z-5); sgl_v3f(x, y, z+5);
     sgl_end();
 }
 
@@ -495,7 +582,7 @@ static void frame(void) {
     struct nk_context *ctx = snk_new_frame();
 
     // Main window
-    if (nk_begin(ctx, "Volume Cartographer", nk_rect(10, 10, 500, 750), 
+    if (nk_begin(ctx, "Volume Cartographer Reloaded", nk_rect(10, 10, 500, 750),
                  NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE | 
                  NK_WINDOW_MINIMIZABLE | NK_WINDOW_TITLE)) {
         
@@ -707,7 +794,7 @@ static void frame(void) {
             .action = {
                 .colors[0] = {
                     .load_action = SG_LOADACTION_CLEAR,
-                    .clear_value = { 0.1f, 0.1f, 0.1f, 1.0f }
+                    .clear_value = { 0.2f, 0.2f, 0.2f, 1.0f }  // Brightened background
                 }
             },
             .attachments = app_state.attachments_3d
