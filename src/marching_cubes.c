@@ -317,35 +317,37 @@ static const int edgeConnection[12][2] = {
 
 
 // Linearly interpolate the position where an isosurface cuts an edge
-static void vertexInterp(float result[3], float isolevel, 
-                        float p1[3], float p2[3], float v1, float v2) {
+// Also returns the interpolation factor for color interpolation
+static float vertexInterp(float result[3], float isolevel, 
+                         float p1[3], float p2[3], float v1, float v2) {
     if (fabs(isolevel - v1) < 0.00001f) {
         result[0] = p1[0];
         result[1] = p1[1];
         result[2] = p1[2];
-        return;
+        return 0.0f;
     }
     if (fabs(isolevel - v2) < 0.00001f) {
         result[0] = p2[0];
         result[1] = p2[1];
         result[2] = p2[2];
-        return;
+        return 1.0f;
     }
     if (fabs(v1 - v2) < 0.00001f) {
         result[0] = p1[0];
         result[1] = p1[1];
         result[2] = p1[2];
-        return;
+        return 0.0f;
     }
     
     float mu = (isolevel - v1) / (v2 - v1);
     result[0] = p1[0] + mu * (p2[0] - p1[0]);
     result[1] = p1[1] + mu * (p2[1] - p1[1]);
     result[2] = p1[2] + mu * (p2[2] - p1[2]);
+    return mu;
 }
 
 // Generate triangles for a single cube with scale factor
-static int marchCube(float vertices[], int* numVertices, 
+static int marchCube(float vertices[], float colors[], int* numVertices, 
                     float x, float y, float z,
                     float val[8], float isolevel, float scale) {
     int cubeindex = 0;
@@ -366,6 +368,7 @@ static int marchCube(float vertices[], int* numVertices,
     
     // Find vertices where surface intersects edges
     float vertlist[12][3];
+    float vertcolors[12];  // Store interpolated color values
     float p1[3], p2[3];
     
     // Compute edge intersections - apply scale to all vertex positions
@@ -380,6 +383,9 @@ static int marchCube(float vertices[], int* numVertices,
             p2[1] = y + vertexOffset[v2][1] * scale;
             p2[2] = z + vertexOffset[v2][2] * scale;
             vertexInterp(vertlist[i], isolevel, p1, p2, val[v1], val[v2]);
+            // For coloring, use the average of the two endpoint values
+            // This gives variation across the surface
+            vertcolors[i] = (val[v1] + val[v2]) * 0.5f;
         }
     }
     
@@ -388,17 +394,35 @@ static int marchCube(float vertices[], int* numVertices,
     for (int i = 0; triTable[cubeindex][i] != -1; i += 3) {
         int idx = *numVertices * 3;
         
+        // First vertex
         vertices[idx + 0] = vertlist[triTable[cubeindex][i]][0];
         vertices[idx + 1] = vertlist[triTable[cubeindex][i]][1];
         vertices[idx + 2] = vertlist[triTable[cubeindex][i]][2];
         
+        // Second vertex
         vertices[idx + 3] = vertlist[triTable[cubeindex][i + 1]][0];
         vertices[idx + 4] = vertlist[triTable[cubeindex][i + 1]][1];
         vertices[idx + 5] = vertlist[triTable[cubeindex][i + 1]][2];
         
+        // Third vertex
         vertices[idx + 6] = vertlist[triTable[cubeindex][i + 2]][0];
         vertices[idx + 7] = vertlist[triTable[cubeindex][i + 2]][1];
         vertices[idx + 8] = vertlist[triTable[cubeindex][i + 2]][2];
+        
+        // Get voxel values as u8 for colormap
+        u8 v1 = (u8)vertcolors[triTable[cubeindex][i]];
+        u8 v2 = (u8)vertcolors[triTable[cubeindex][i + 1]];
+        u8 v3 = (u8)vertcolors[triTable[cubeindex][i + 2]];
+        
+        // Apply viridis colormap
+        rgb col1 = apply_viridis_colormap(v1);
+        rgb col2 = apply_viridis_colormap(v2);
+        rgb col3 = apply_viridis_colormap(v3);
+        
+        // Store colors (convert to 0-1 range)
+        colors[idx + 0] = col1.r / 255.0f; colors[idx + 1] = col1.g / 255.0f; colors[idx + 2] = col1.b / 255.0f;
+        colors[idx + 3] = col2.r / 255.0f; colors[idx + 4] = col2.g / 255.0f; colors[idx + 5] = col2.b / 255.0f;
+        colors[idx + 6] = col3.r / 255.0f; colors[idx + 7] = col3.g / 255.0f; colors[idx + 8] = col3.b / 255.0f;
         
         *numVertices += 3;
         nTriangles++;
@@ -436,6 +460,7 @@ mesh generate_mesh_from_chunk(const chunk* volume_data, u8 iso_threshold) {
     
     int max_vertices = LOD_SIZE * LOD_SIZE * LOD_SIZE * 15;
     float* vertices = malloc(max_vertices * 3 * sizeof(float));
+    float* colors = malloc(max_vertices * 3 * sizeof(float));
     int num_vertices = 0;
     
     float isolevel = (float)iso_threshold;
@@ -455,7 +480,7 @@ mesh generate_mesh_from_chunk(const chunk* volume_data, u8 iso_threshold) {
                 val[7] = (float)downsampled[z+1][y+1][x];
                 
                 // Generate triangles for this cube, but scale coordinates back up by 2
-                marchCube(vertices, &num_vertices, 
+                marchCube(vertices, colors, &num_vertices, 
                          (float)x * 2.0f, (float)y * 2.0f, (float)z * 2.0f, val, isolevel, 2.0f);
                 
                 // Check if we're running out of space
@@ -472,22 +497,42 @@ done:
     
     if (num_vertices > 0) {
         result.vertices = realloc(vertices, num_vertices * 3 * sizeof(float));
+        result.colors = realloc(colors, num_vertices * 3 * sizeof(float));
     } else {
         free(vertices);
+        free(colors);
         result.vertices = NULL;
+        result.colors = NULL;
     }
     
     LOG_INFO("Marching cubes generated %d triangles (%d vertices)\n", 
              result.num_triangles, num_vertices);
+    
+    // Debug: Check color range
+    if (result.colors && num_vertices > 0) {
+        float min_color = 1.0f, max_color = 0.0f;
+        for (int i = 0; i < num_vertices * 3; i += 3) {
+            float c = result.colors[i];
+            if (c < min_color) min_color = c;
+            if (c > max_color) max_color = c;
+        }
+        LOG_INFO("Color range: min=%.3f, max=%.3f\n", min_color, max_color);
+    }
     
     return result;
 }
 
 // Free mesh memory
 void mesh_free(mesh* m) {
-    if (m && m->vertices) {
-        free(m->vertices);
-        m->vertices = NULL;
+    if (m) {
+        if (m->vertices) {
+            free(m->vertices);
+            m->vertices = NULL;
+        }
+        if (m->colors) {
+            free(m->colors);
+            m->colors = NULL;
+        }
         m->num_triangles = 0;
     }
 }

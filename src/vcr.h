@@ -121,3 +121,11 @@ typedef struct mesh {
 // marching cubes
 mesh generate_mesh_from_chunk(const chunk* volume_data, u8 iso_threshold);
 void mesh_free(mesh* m);
+
+// color types
+typedef struct rgb {
+    u8 r, g, b;
+} rgb;
+
+// colormap
+rgb apply_viridis_colormap(u8 value);

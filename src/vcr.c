@@ -300,7 +300,7 @@ static void init(void) {
     
     // Create pipeline for 3D rendering
     app_state.sgl_pip_3d = sgl_context_make_pipeline(app_state.sgl_ctx_3d, &(sg_pipeline_desc){
-        .cull_mode = SG_CULLMODE_BACK,
+        .cull_mode = SG_CULLMODE_NONE,  // Disable culling to see both sides
         .depth = {
             .write_enabled = true,
             .compare = SG_COMPAREFUNC_LESS_EQUAL,
@@ -346,12 +346,21 @@ static void render_3d_view(void) {
     // Draw the mesh
     if (app_state.current_mesh.vertices && app_state.current_mesh.num_triangles > 0) {
         sgl_begin_triangles();
-        sgl_c3f(0.8f, 0.8f, 0.8f);  // Light gray color
         
         for (int i = 0; i < app_state.current_mesh.num_triangles; i++) {
             float* v = &app_state.current_mesh.vertices[i * 9];
+            float* c = &app_state.current_mesh.colors[i * 9];
+            
+            // First vertex
+            sgl_c3f(c[0], c[1], c[2]);
             sgl_v3f(v[0], v[1], v[2]);
+            
+            // Second vertex
+            sgl_c3f(c[3], c[4], c[5]);
             sgl_v3f(v[3], v[4], v[5]);
+            
+            // Third vertex
+            sgl_c3f(c[6], c[7], c[8]);
             sgl_v3f(v[6], v[7], v[8]);
         }
         
