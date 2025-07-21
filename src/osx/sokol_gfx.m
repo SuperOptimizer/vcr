@@ -6,6 +6,7 @@
 #include "sokol_app.h"
 #include "sokol_glue.h"
 #include "sokol_args.h"
+#include "sokol_gl.h"
 
 #define NK_INCLUDE_FIXED_TYPES
 #define NK_INCLUDE_STANDARD_IO

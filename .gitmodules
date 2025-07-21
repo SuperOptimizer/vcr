@@ -13,3 +13,6 @@
 [submodule "thirdparty/sokol-samples"]
 	path = thirdparty/sokol-samples
 	url = https://github.com/floooh/sokol-samples.git
+[submodule "thirdparty/sokol-tools"]
+	path = thirdparty/sokol-tools
+	url = https://github.com/floooh/sokol-tools.git

@@ -14,7 +14,7 @@ endif ()
 
 add_compile_options(-g3 -Wall -Wextra)
 
-set(SOURCES src/vcr.c src/vcr.h src/zarr.c src/util.c)
+set(SOURCES src/vcr.c src/vcr.h src/zarr.c src/util.c src/marching_cubes.c)
 set(LIBRARIES -lm )
 
 if(APPLE)

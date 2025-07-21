@@ -110,3 +110,14 @@ static inline void chunk_free(chunk* c){free(c);}
 // zarr
 zarrinfo zarr_parse_zarray(const char* json_string);
 chunk* zarr_read_chunk(char* path, zarrinfo metadata);
+
+// mesh structure for marching cubes output
+typedef struct mesh {
+    float* vertices;      // x,y,z per vertex (num_triangles * 9 floats)
+    float* colors;        // r,g,b per vertex (num_triangles * 9 floats)
+    int num_triangles;
+} mesh;
+
+// marching cubes
+mesh generate_mesh_from_chunk(const chunk* volume_data, u8 iso_threshold);
+void mesh_free(mesh* m);
