@@ -343,24 +343,59 @@ static void render_3d_view(void) {
     sgl_rotate(sgl_rad(app_state.rotation_y), 0.0f, 1.0f, 0.0f);
     sgl_translate(-64.0f, -64.0f, -64.0f);
     
-    // Draw the mesh
+    // Draw the mesh with simple lighting
     if (app_state.current_mesh.vertices && app_state.current_mesh.num_triangles > 0) {
         sgl_begin_triangles();
+        
+        // Fixed light direction (pointing down and slightly forward)
+        float light_dir[3] = {0.0f, -0.8f, -0.6f};
+        // Normalize light direction
+        float light_len = sqrtf(light_dir[0]*light_dir[0] + light_dir[1]*light_dir[1] + light_dir[2]*light_dir[2]);
+        light_dir[0] /= light_len;
+        light_dir[1] /= light_len;
+        light_dir[2] /= light_len;
         
         for (int i = 0; i < app_state.current_mesh.num_triangles; i++) {
             float* v = &app_state.current_mesh.vertices[i * 9];
             float* c = &app_state.current_mesh.colors[i * 9];
             
+            // Calculate face normal using cross product
+            float v1[3] = {v[3] - v[0], v[4] - v[1], v[5] - v[2]};
+            float v2[3] = {v[6] - v[0], v[7] - v[1], v[8] - v[2]};
+            
+            float normal[3];
+            normal[0] = v1[1] * v2[2] - v1[2] * v2[1];
+            normal[1] = v1[2] * v2[0] - v1[0] * v2[2];
+            normal[2] = v1[0] * v2[1] - v1[1] * v2[0];
+            
+            // Normalize the normal
+            float normal_len = sqrtf(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
+            if (normal_len > 0.0001f) {
+                normal[0] /= normal_len;
+                normal[1] /= normal_len;
+                normal[2] /= normal_len;
+            }
+            
+            // Calculate lighting (dot product between normal and light direction)
+            float dot = -(normal[0] * light_dir[0] + normal[1] * light_dir[1] + normal[2] * light_dir[2]);
+            dot = fmaxf(0.0f, dot); // Clamp to positive values
+            
+            // Apply lighting with ambient component
+            float ambient = 0.3f;
+            float diffuse = 0.7f;
+            float lighting = ambient + diffuse * dot;
+            
+            // Apply lighting to vertex colors
             // First vertex
-            sgl_c3f(c[0], c[1], c[2]);
+            sgl_c3f(c[0] * lighting, c[1] * lighting, c[2] * lighting);
             sgl_v3f(v[0], v[1], v[2]);
             
             // Second vertex
-            sgl_c3f(c[3], c[4], c[5]);
+            sgl_c3f(c[3] * lighting, c[4] * lighting, c[5] * lighting);
             sgl_v3f(v[3], v[4], v[5]);
             
             // Third vertex
-            sgl_c3f(c[6], c[7], c[8]);
+            sgl_c3f(c[6] * lighting, c[7] * lighting, c[8] * lighting);
             sgl_v3f(v[6], v[7], v[8]);
         }
         
@@ -601,11 +636,17 @@ static void frame(void) {
                      NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE | 
                      NK_WINDOW_MINIMIZABLE | NK_WINDOW_TITLE)) {
             
-            // Threshold control
+            // Iso threshold control
+            nk_layout_row_dynamic(ctx, 20, 1);
+            nk_label(ctx, "Iso Threshold (0-255):", NK_TEXT_LEFT);
+            
             nk_layout_row_dynamic(ctx, 25, 1);
-            nk_property_int(ctx, "Threshold", 0, (int*)&app_state.iso_threshold, 255, 1, 1);
+            int threshold = (int)app_state.iso_threshold;
+            nk_property_int(ctx, "##threshold", 0, &threshold, 255, 1, 5);
+            app_state.iso_threshold = (u8)threshold;
             
             // Regenerate mesh button
+            nk_layout_row_dynamic(ctx, 30, 1);
             if (nk_button_label(ctx, "Regenerate Mesh")) {
                 mesh_free(&app_state.current_mesh);
                 app_state.current_mesh = generate_mesh_from_chunk(app_state.loaded_chunk, app_state.iso_threshold);

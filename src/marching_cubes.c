@@ -508,15 +508,45 @@ done:
     LOG_INFO("Marching cubes generated %d triangles (%d vertices)\n", 
              result.num_triangles, num_vertices);
     
-    // Debug: Check color range
+    // Normalize grayscale values to use full colormap range
     if (result.colors && num_vertices > 0) {
-        float min_color = 1.0f, max_color = 0.0f;
-        for (int i = 0; i < num_vertices * 3; i += 3) {
-            float c = result.colors[i];
-            if (c < min_color) min_color = c;
-            if (c > max_color) max_color = c;
+        // First, we need to extract the grayscale values that were stored
+        // They're currently in RGB triplets but all the same value
+        float* grayscale_values = malloc(num_vertices * sizeof(float));
+        
+        // Extract grayscale values (just take R channel since R=G=B)
+        for (int i = 0; i < num_vertices; i++) {
+            grayscale_values[i] = result.colors[i * 3] * 255.0f;
         }
-        LOG_INFO("Color range: min=%.3f, max=%.3f\n", min_color, max_color);
+        
+        // Find min/max
+        float min_val = 255.0f, max_val = 0.0f;
+        for (int i = 0; i < num_vertices; i++) {
+            if (grayscale_values[i] < min_val) min_val = grayscale_values[i];
+            if (grayscale_values[i] > max_val) max_val = grayscale_values[i];
+        }
+        
+        LOG_INFO("Color range before normalization: min=%.1f, max=%.1f\n", min_val, max_val);
+        
+        // Normalize and apply colormap
+        float range = max_val - min_val;
+        if (range > 0.001f) {
+            for (int i = 0; i < num_vertices; i++) {
+                // Normalize to 0-255
+                float normalized = (grayscale_values[i] - min_val) / range * 255.0f;
+                u8 idx = (u8)fminf(255.0f, fmaxf(0.0f, normalized));
+                
+                // Apply viridis colormap
+                rgb color = apply_viridis_colormap(idx);
+                
+                // Store RGB values
+                result.colors[i * 3 + 0] = color.r / 255.0f;
+                result.colors[i * 3 + 1] = color.g / 255.0f;
+                result.colors[i * 3 + 2] = color.b / 255.0f;
+            }
+        }
+        
+        free(grayscale_values);
     }
     
     return result;
