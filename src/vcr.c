@@ -31,8 +31,9 @@ typedef struct {
     s32 chunk_offset[3]; // z, y, x
     s32 chunk_size[3];   // z, y, x
     
-    // Loaded chunk data
-    chunk* loaded_chunk;
+    // Loaded volume data
+    volume* loaded_volume;
+    chunk* loaded_chunk;  // Keep for single chunk mode
     s32 current_slice[3]; // z, y, x indices for the current position
     
     // Textures for displaying slices
@@ -49,7 +50,9 @@ typedef struct {
     sgl_pipeline sgl_pip_transparent;  // Pipeline for transparent objects
     
     // Mesh data from marching cubes
-    mesh current_mesh;
+    mesh* chunk_meshes;  // Array of meshes, one per chunk in volume
+    int num_chunk_meshes;
+    mesh current_mesh;  // Keep for single chunk mode
     float rotation_x, rotation_y;
     u8 iso_threshold;  // Threshold for isosurface
     
@@ -64,30 +67,92 @@ typedef struct {
 static app_state_t app_state;
 
 
+// Helper to get voxel value from either chunk or volume
+static u8 get_voxel_value(int z, int y, int x) {
+    if (app_state.loaded_volume) {
+        // Get from volume
+        int chunk_z = z / CHUNK_LEN;
+        int chunk_y = y / CHUNK_LEN;
+        int chunk_x = x / CHUNK_LEN;
+        
+        if (chunk_z >= app_state.loaded_volume->z || 
+            chunk_y >= app_state.loaded_volume->y || 
+            chunk_x >= app_state.loaded_volume->x ||
+            chunk_z < 0 || chunk_y < 0 || chunk_x < 0) {
+            return 0;
+        }
+        
+        int local_z = z % CHUNK_LEN;
+        int local_y = y % CHUNK_LEN;
+        int local_x = x % CHUNK_LEN;
+        
+        int chunk_idx = chunk_z * app_state.loaded_volume->y * app_state.loaded_volume->x + 
+                       chunk_y * app_state.loaded_volume->x + chunk_x;
+        return app_state.loaded_volume->chunks[chunk_idx][local_z][local_y][local_x];
+    } else if (app_state.loaded_chunk) {
+        // Get from single chunk
+        if (z >= 0 && z < CHUNK_LEN && y >= 0 && y < CHUNK_LEN && x >= 0 && x < CHUNK_LEN) {
+            return (*app_state.loaded_chunk)[z][y][x];
+        }
+    }
+    return 0;
+}
+
 // Create or update a specific slice texture
 static void update_slice_texture(int view_idx) {
-    if (!app_state.loaded_chunk) return;
+    if (!app_state.loaded_chunk && !app_state.loaded_volume) return;
     
-    // Create RGBA data from grayscale
-    u8* rgba_data = malloc(CHUNK_LEN * CHUNK_LEN * 4);
+    // Determine texture size based on volume or chunk
+    int tex_size = CHUNK_LEN;
+    if (app_state.loaded_volume) {
+        // For volume, create texture large enough for all chunks
+        switch (view_idx) {
+            case 0: // XY view
+                tex_size = fmax(app_state.loaded_volume->y * CHUNK_LEN, 
+                               app_state.loaded_volume->x * CHUNK_LEN);
+                break;
+            case 1: // XZ view
+                tex_size = fmax(app_state.loaded_volume->z * CHUNK_LEN,
+                               app_state.loaded_volume->x * CHUNK_LEN);
+                break;
+            case 2: // YZ view
+                tex_size = fmax(app_state.loaded_volume->z * CHUNK_LEN,
+                               app_state.loaded_volume->y * CHUNK_LEN);
+                break;
+        }
+    }
+    
+    // Create RGBA data
+    u8* rgba_data = calloc(tex_size * tex_size * 4, 1);
     
     // Extract the appropriate slice based on view type
-    for (int i = 0; i < CHUNK_LEN; i++) {
-        for (int j = 0; j < CHUNK_LEN; j++) {
+    for (int i = 0; i < tex_size; i++) {
+        for (int j = 0; j < tex_size; j++) {
             u8 gray = 0;
+            int z_coord = 0, y_coord = 0, x_coord = 0;
+            
             switch (view_idx) {
                 case 0: // XY view (constant Z)
-                    gray = (*app_state.loaded_chunk)[app_state.current_slice[0]][i][j];
+                    z_coord = app_state.current_slice[0];
+                    y_coord = i;
+                    x_coord = j;
                     break;
                 case 1: // XZ view (constant Y)
-                    gray = (*app_state.loaded_chunk)[i][app_state.current_slice[1]][j];
+                    z_coord = i;
+                    y_coord = app_state.current_slice[1];
+                    x_coord = j;
                     break;
                 case 2: // YZ view (constant X)
-                    gray = (*app_state.loaded_chunk)[i][j][app_state.current_slice[2]];
+                    z_coord = i;
+                    y_coord = j;
+                    x_coord = app_state.current_slice[2];
                     break;
             }
             
-            int idx = i * CHUNK_LEN + j;
+            // Get voxel value
+            gray = get_voxel_value(z_coord, y_coord, x_coord);
+            
+            int idx = i * tex_size + j;
             
             // Add crosshairs to show current position
             bool is_crosshair = false;
@@ -95,7 +160,7 @@ static void update_slice_texture(int view_idx) {
                 case 0: // XY view - show Y and X position
                     is_crosshair = (i == app_state.current_slice[1] || j == app_state.current_slice[2]);
                     break;
-                case 1: // XZ view - show Z and X position
+                case 1: // XZ view - show Z and X position  
                     is_crosshair = (i == app_state.current_slice[0] || j == app_state.current_slice[2]);
                     break;
                 case 2: // YZ view - show Z and Y position
@@ -125,12 +190,12 @@ static void update_slice_texture(int view_idx) {
     
     // Create new image
     app_state.slice_images[view_idx] = sg_make_image(&(sg_image_desc){
-        .width = CHUNK_LEN,
-        .height = CHUNK_LEN,
+        .width = tex_size,
+        .height = tex_size,
         .pixel_format = SG_PIXELFORMAT_RGBA8,
         .data.subimage[0][0] = {
             .ptr = rgba_data,
-            .size = CHUNK_LEN * CHUNK_LEN * 4
+            .size = tex_size * tex_size * 4
         }
     });
     
@@ -214,6 +279,83 @@ static void load_chunk(void) {
     }
 }
 
+// Function to load volume from zarr array
+static void load_volume(void) {
+    if (!app_state.zarr_info.chunks[0]) {
+        sprintf(app_state.info_text, "Please load a zarr array first");
+        return;
+    }
+    
+    // For now, load a 2x2x2 volume of chunks
+    s32 volume_size[3] = {2, 2, 2};  // z, y, x chunks
+    
+    // Free previous volume if any
+    if (app_state.loaded_volume) {
+        volume_free(app_state.loaded_volume);
+        app_state.loaded_volume = NULL;
+    }
+    
+    // Free previous meshes
+    if (app_state.chunk_meshes) {
+        for (int i = 0; i < app_state.num_chunk_meshes; i++) {
+            mesh_free(&app_state.chunk_meshes[i]);
+        }
+        free(app_state.chunk_meshes);
+        app_state.chunk_meshes = NULL;
+    }
+    
+    // Load the volume
+    app_state.loaded_volume = zarr_read_volume(app_state.zarr_path, app_state.zarr_info,
+                                               app_state.chunk_offset[0] / CHUNK_LEN, 
+                                               app_state.chunk_offset[1] / CHUNK_LEN, 
+                                               app_state.chunk_offset[2] / CHUNK_LEN,
+                                               volume_size[0], volume_size[1], volume_size[2]);
+    
+    if (app_state.loaded_volume) {
+        sprintf(app_state.info_text, "Successfully loaded %dx%dx%d volume from offset [%d,%d,%d]", 
+                volume_size[0], volume_size[1], volume_size[2],
+                app_state.chunk_offset[0], app_state.chunk_offset[1], app_state.chunk_offset[2]);
+        
+        // Generate meshes for each chunk
+        int total_chunks = volume_size[0] * volume_size[1] * volume_size[2];
+        app_state.chunk_meshes = malloc(total_chunks * sizeof(mesh));
+        app_state.num_chunk_meshes = 0;
+        
+        for (int z = 0; z < volume_size[0]; z++) {
+            for (int y = 0; y < volume_size[1]; y++) {
+                for (int x = 0; x < volume_size[2]; x++) {
+                    int idx = z * volume_size[1] * volume_size[2] + y * volume_size[2] + x;
+                    app_state.chunk_meshes[app_state.num_chunk_meshes] = 
+                        generate_mesh_from_chunk(&app_state.loaded_volume->chunks[idx], app_state.iso_threshold);
+                    
+                    // Offset the mesh vertices to position the chunk correctly
+                    mesh* m = &app_state.chunk_meshes[app_state.num_chunk_meshes];
+                    if (m->vertices && m->num_triangles > 0) {
+                        for (int i = 0; i < m->num_triangles * 3; i++) {
+                            m->vertices[i * 3 + 0] += x * CHUNK_LEN;  // X offset
+                            m->vertices[i * 3 + 1] += y * CHUNK_LEN;  // Y offset
+                            m->vertices[i * 3 + 2] += z * CHUNK_LEN;  // Z offset
+                        }
+                        app_state.num_chunk_meshes++;
+                    }
+                }
+            }
+        }
+        
+        LOG_INFO("Generated %d meshes from volume\n", app_state.num_chunk_meshes);
+        
+        // Initialize slice position to center of volume
+        app_state.current_slice[0] = (volume_size[0] * CHUNK_LEN) / 2;
+        app_state.current_slice[1] = (volume_size[1] * CHUNK_LEN) / 2;
+        app_state.current_slice[2] = (volume_size[2] * CHUNK_LEN) / 2;
+        
+        // Update slice textures
+        update_all_slice_textures();
+    } else {
+        sprintf(app_state.info_text, "Failed to load volume");
+    }
+}
+
 // Function to load and parse .zarray file from a zarr volume path
 static void load_zarr_array(const char* zarr_path) {
     char zarray_path[1024];
@@ -265,7 +407,7 @@ static void init(void) {
     
     // Setup sokol-gl with larger vertex buffer for marching cubes
     sgl_setup(&(sgl_desc_t){
-        .max_vertices = 1024 * 1024,  // 1M vertices (enough for ~333K triangles)
+        .max_vertices = 8 * 1024 * 1024,  // 8M vertices (enough for multiple chunks)
         .logger.func = slog_func,
     });
     
@@ -292,7 +434,7 @@ static void init(void) {
     
     // Create sokol-gl context for 3D rendering with large vertex buffer
     app_state.sgl_ctx_3d = sgl_make_context(&(sgl_context_desc_t){
-        .max_vertices = 1024 * 1024,  // Match the main context size
+        .max_vertices = 8 * 1024 * 1024,  // Match the main context size
         .max_commands = 16 * 1024,
         .color_format = SG_PIXELFORMAT_RGBA8,
         .depth_format = SG_PIXELFORMAT_DEPTH,
@@ -335,9 +477,62 @@ static void init(void) {
     app_state.render_3d_created = true;
 }
 
+// Helper function to render a mesh with lighting
+static void render_mesh_with_lighting(mesh* m, float light_dir[3]) {
+    if (!m || !m->vertices || m->num_triangles <= 0) return;
+    
+    sgl_begin_triangles();
+    
+    for (int i = 0; i < m->num_triangles; i++) {
+        float* v = &m->vertices[i * 9];
+        float* c = &m->colors[i * 9];
+        
+        // Calculate face normal using cross product
+        float v1[3] = {v[3] - v[0], v[4] - v[1], v[5] - v[2]};
+        float v2[3] = {v[6] - v[0], v[7] - v[1], v[8] - v[2]};
+        
+        float normal[3];
+        normal[0] = v1[1] * v2[2] - v1[2] * v2[1];
+        normal[1] = v1[2] * v2[0] - v1[0] * v2[2];
+        normal[2] = v1[0] * v2[1] - v1[1] * v2[0];
+        
+        // Normalize the normal
+        float normal_len = sqrtf(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
+        if (normal_len > 0.0001f) {
+            normal[0] /= normal_len;
+            normal[1] /= normal_len;
+            normal[2] /= normal_len;
+        }
+        
+        // Calculate lighting (dot product between normal and light direction)
+        float dot = -(normal[0] * light_dir[0] + normal[1] * light_dir[1] + normal[2] * light_dir[2]);
+        dot = fmaxf(0.0f, dot); // Clamp to positive values
+        
+        // Apply lighting with ambient component
+        float ambient = 0.5f;  // Increased from 0.3f for brighter scene
+        float diffuse = 0.6f;  // Slightly reduced to compensate for higher ambient
+        float lighting = ambient + diffuse * dot;
+        
+        // Apply lighting to vertex colors
+        // First vertex
+        sgl_c3f(c[0] * lighting, c[1] * lighting, c[2] * lighting);
+        sgl_v3f(v[0], v[1], v[2]);
+        
+        // Second vertex
+        sgl_c3f(c[3] * lighting, c[4] * lighting, c[5] * lighting);
+        sgl_v3f(v[3], v[4], v[5]);
+        
+        // Third vertex
+        sgl_c3f(c[6] * lighting, c[7] * lighting, c[8] * lighting);
+        sgl_v3f(v[6], v[7], v[8]);
+    }
+    
+    sgl_end();
+}
+
 // Render 3D view to texture
 static void render_3d_view(void) {
-    if (!app_state.loaded_chunk || !app_state.render_3d_created) return;
+    if ((!app_state.loaded_chunk && !app_state.loaded_volume) || !app_state.render_3d_created) return;
     
     // Set the sokol-gl context
     sgl_set_context(app_state.sgl_ctx_3d);
@@ -348,79 +543,51 @@ static void render_3d_view(void) {
     sgl_matrix_mode_projection();
     sgl_perspective(sgl_rad(45.0f), 1.0f, 0.1f, 1000.0f);
     
-    // Setup camera
+    // Setup camera - adjust for volume vs single chunk
     sgl_matrix_mode_modelview();
-    sgl_lookat(200.0f, 200.0f, 200.0f,  // eye
-               64.0f, 64.0f, 64.0f,      // center (middle of chunk)
-               0.0f, 1.0f, 0.0f);        // up
+    
+    float center_x = 64.0f, center_y = 64.0f, center_z = 64.0f;
+    float eye_dist = 200.0f;
+    
+    if (app_state.loaded_volume) {
+        // For volume, center on the middle of the volume
+        center_x = app_state.loaded_volume->x * CHUNK_LEN / 2.0f;
+        center_y = app_state.loaded_volume->y * CHUNK_LEN / 2.0f;
+        center_z = app_state.loaded_volume->z * CHUNK_LEN / 2.0f;
+        eye_dist = fmaxf(app_state.loaded_volume->x, fmaxf(app_state.loaded_volume->y, app_state.loaded_volume->z)) * CHUNK_LEN * 1.5f;
+    }
+    
+    sgl_lookat(center_x + eye_dist, center_y + eye_dist, center_z + eye_dist,  // eye
+               center_x, center_y, center_z,      // center
+               0.0f, 1.0f, 0.0f);                 // up
     
     // Apply rotation
-    sgl_translate(64.0f, 64.0f, 64.0f);
+    sgl_translate(center_x, center_y, center_z);
     sgl_rotate(sgl_rad(app_state.rotation_x), 1.0f, 0.0f, 0.0f);
     sgl_rotate(sgl_rad(app_state.rotation_y), 0.0f, 1.0f, 0.0f);
-    sgl_translate(-64.0f, -64.0f, -64.0f);
+    sgl_translate(-center_x, -center_y, -center_z);
     
-    // Draw the mesh with simple lighting
-    if (app_state.current_mesh.vertices && app_state.current_mesh.num_triangles > 0) {
-        sgl_begin_triangles();
-        
-        // Fixed light direction (pointing down and slightly forward)
-        float light_dir[3] = {0.0f, -0.8f, -0.6f};
-        // Normalize light direction
-        float light_len = sqrtf(light_dir[0]*light_dir[0] + light_dir[1]*light_dir[1] + light_dir[2]*light_dir[2]);
-        light_dir[0] /= light_len;
-        light_dir[1] /= light_len;
-        light_dir[2] /= light_len;
-        
-        for (int i = 0; i < app_state.current_mesh.num_triangles; i++) {
-            float* v = &app_state.current_mesh.vertices[i * 9];
-            float* c = &app_state.current_mesh.colors[i * 9];
-            
-            // Calculate face normal using cross product
-            float v1[3] = {v[3] - v[0], v[4] - v[1], v[5] - v[2]};
-            float v2[3] = {v[6] - v[0], v[7] - v[1], v[8] - v[2]};
-            
-            float normal[3];
-            normal[0] = v1[1] * v2[2] - v1[2] * v2[1];
-            normal[1] = v1[2] * v2[0] - v1[0] * v2[2];
-            normal[2] = v1[0] * v2[1] - v1[1] * v2[0];
-            
-            // Normalize the normal
-            float normal_len = sqrtf(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
-            if (normal_len > 0.0001f) {
-                normal[0] /= normal_len;
-                normal[1] /= normal_len;
-                normal[2] /= normal_len;
-            }
-            
-            // Calculate lighting (dot product between normal and light direction)
-            float dot = -(normal[0] * light_dir[0] + normal[1] * light_dir[1] + normal[2] * light_dir[2]);
-            dot = fmaxf(0.0f, dot); // Clamp to positive values
-            
-            // Apply lighting with ambient component
-            float ambient = 0.5f;  // Increased from 0.3f for brighter scene
-            float diffuse = 0.6f;  // Slightly reduced to compensate for higher ambient
-            float lighting = ambient + diffuse * dot;
-            
-            // Apply lighting to vertex colors
-            // First vertex
-            sgl_c3f(c[0] * lighting, c[1] * lighting, c[2] * lighting);
-            sgl_v3f(v[0], v[1], v[2]);
-            
-            // Second vertex
-            sgl_c3f(c[3] * lighting, c[4] * lighting, c[5] * lighting);
-            sgl_v3f(v[3], v[4], v[5]);
-            
-            // Third vertex
-            sgl_c3f(c[6] * lighting, c[7] * lighting, c[8] * lighting);
-            sgl_v3f(v[6], v[7], v[8]);
+    // Fixed light direction (pointing down and slightly forward)
+    float light_dir[3] = {0.0f, -0.8f, -0.6f};
+    // Normalize light direction
+    float light_len = sqrtf(light_dir[0]*light_dir[0] + light_dir[1]*light_dir[1] + light_dir[2]*light_dir[2]);
+    light_dir[0] /= light_len;
+    light_dir[1] /= light_len;
+    light_dir[2] /= light_len;
+    
+    // Draw meshes - either volume meshes or single chunk mesh
+    if (app_state.chunk_meshes && app_state.num_chunk_meshes > 0) {
+        // Render all chunk meshes in the volume
+        for (int i = 0; i < app_state.num_chunk_meshes; i++) {
+            render_mesh_with_lighting(&app_state.chunk_meshes[i], light_dir);
         }
-        
-        sgl_end();
+    } else if (app_state.current_mesh.vertices && app_state.current_mesh.num_triangles > 0) {
+        // Render single chunk mesh
+        render_mesh_with_lighting(&app_state.current_mesh, light_dir);
     }
     
     // Draw slice planes as semi-transparent quads
-    if (app_state.loaded_chunk) {
+    if (app_state.loaded_chunk || app_state.loaded_volume) {
         // Switch to transparent pipeline
         sgl_load_pipeline(app_state.sgl_pip_transparent);
         
@@ -428,31 +595,42 @@ static void render_3d_view(void) {
         float y = (float)app_state.current_slice[1];
         float z = (float)app_state.current_slice[0];
         
+        // Determine the size based on whether we have a volume or single chunk
+        float max_x = CHUNK_LEN;
+        float max_y = CHUNK_LEN;
+        float max_z = CHUNK_LEN;
+        
+        if (app_state.loaded_volume) {
+            max_x = app_state.loaded_volume->x * CHUNK_LEN;
+            max_y = app_state.loaded_volume->y * CHUNK_LEN;
+            max_z = app_state.loaded_volume->z * CHUNK_LEN;
+        }
+        
         // XY plane (constant Z) - blue tint
         sgl_begin_quads();
         sgl_c4f(0.2f, 0.3f, 0.8f, 0.5f);  // Increased alpha from 0.3f to 0.5f
         sgl_v3f(0.0f, 0.0f, z);
-        sgl_v3f(CHUNK_LEN, 0.0f, z);
-        sgl_v3f(CHUNK_LEN, CHUNK_LEN, z);
-        sgl_v3f(0.0f, CHUNK_LEN, z);
+        sgl_v3f(max_x, 0.0f, z);
+        sgl_v3f(max_x, max_y, z);
+        sgl_v3f(0.0f, max_y, z);
         sgl_end();
         
         // XZ plane (constant Y) - green tint
         sgl_begin_quads();
         sgl_c4f(0.2f, 0.8f, 0.3f, 0.5f);  // Increased alpha from 0.3f to 0.5f
         sgl_v3f(0.0f, y, 0.0f);
-        sgl_v3f(CHUNK_LEN, y, 0.0f);
-        sgl_v3f(CHUNK_LEN, y, CHUNK_LEN);
-        sgl_v3f(0.0f, y, CHUNK_LEN);
+        sgl_v3f(max_x, y, 0.0f);
+        sgl_v3f(max_x, y, max_z);
+        sgl_v3f(0.0f, y, max_z);
         sgl_end();
         
         // YZ plane (constant X) - red tint
         sgl_begin_quads();
         sgl_c4f(0.8f, 0.2f, 0.3f, 0.5f);  // Increased alpha from 0.3f to 0.5f
         sgl_v3f(x, 0.0f, 0.0f);
-        sgl_v3f(x, CHUNK_LEN, 0.0f);
-        sgl_v3f(x, CHUNK_LEN, CHUNK_LEN);
-        sgl_v3f(x, 0.0f, CHUNK_LEN);
+        sgl_v3f(x, max_y, 0.0f);
+        sgl_v3f(x, max_y, max_z);
+        sgl_v3f(x, 0.0f, max_z);
         sgl_end();
         
         // Draw intersection lines where planes meet (more opaque)
@@ -461,15 +639,15 @@ static void render_3d_view(void) {
         
         // XY-XZ intersection (along X axis at y,z)
         sgl_v3f(0.0f, y, z);
-        sgl_v3f(CHUNK_LEN, y, z);
+        sgl_v3f(max_x, y, z);
         
         // XY-YZ intersection (along Y axis at x,z)
         sgl_v3f(x, 0.0f, z);
-        sgl_v3f(x, CHUNK_LEN, z);
+        sgl_v3f(x, max_y, z);
         
         // XZ-YZ intersection (along Z axis at x,y)
         sgl_v3f(x, y, 0.0f);
-        sgl_v3f(x, y, CHUNK_LEN);
+        sgl_v3f(x, y, max_z);
         sgl_end();
         
         // Draw intersection point as a small sphere (using a cube for simplicity)
@@ -502,19 +680,23 @@ static void render_3d_view(void) {
     }
     
     // Draw coordinate axes for reference
+    float axis_len = app_state.loaded_volume ? 
+        fmaxf(app_state.loaded_volume->x, fmaxf(app_state.loaded_volume->y, app_state.loaded_volume->z)) * CHUNK_LEN :
+        CHUNK_LEN;
+    
     sgl_begin_lines();
     // X axis - red
     sgl_c3f(1.0f, 0.0f, 0.0f);
     sgl_v3f(0.0f, 0.0f, 0.0f);
-    sgl_v3f(CHUNK_LEN, 0.0f, 0.0f);
+    sgl_v3f(axis_len, 0.0f, 0.0f);
     // Y axis - green
     sgl_c3f(0.0f, 1.0f, 0.0f);
     sgl_v3f(0.0f, 0.0f, 0.0f);
-    sgl_v3f(0.0f, CHUNK_LEN, 0.0f);
+    sgl_v3f(0.0f, axis_len, 0.0f);
     // Z axis - blue
     sgl_c3f(0.0f, 0.0f, 1.0f);
     sgl_v3f(0.0f, 0.0f, 0.0f);
-    sgl_v3f(0.0f, 0.0f, CHUNK_LEN);
+    sgl_v3f(0.0f, 0.0f, axis_len);
     sgl_end();
 }
 
@@ -535,11 +717,19 @@ void draw_slice_viewer(struct nk_context *ctx, const char* title, int view_idx, 
 
         // Display current slice info
         char buffer[256];
+        int max_val = CHUNK_LEN - 1;
+        if (app_state.loaded_volume) {
+            switch (view_idx) {
+                case 0: max_val = app_state.loaded_volume->z * CHUNK_LEN - 1; break;
+                case 1: max_val = app_state.loaded_volume->y * CHUNK_LEN - 1; break;
+                case 2: max_val = app_state.loaded_volume->x * CHUNK_LEN - 1; break;
+            }
+        }
         sprintf(buffer, "%s View - %s: %d / %d",
                 view_names[view_idx],
                 axis_names[view_idx],
                 app_state.current_slice[view_idx],
-                CHUNK_LEN - 1);
+                max_val);
         nk_layout_row_dynamic(ctx, 20, 1);
         nk_label(ctx, buffer, NK_TEXT_CENTERED);
 
@@ -707,13 +897,18 @@ static void frame(void) {
             if (nk_button_label(ctx, "Load Chunk")) {
                 load_chunk();
             }
+            
+            // Load volume button (2x2x2 chunks)
+            if (nk_button_label(ctx, "Load Volume (2x2x2)")) {
+                load_volume();
+            }
         }
     }
     nk_end(ctx);
 
     
     // Draw all three slice viewers
-    if (app_state.loaded_chunk) {
+    if (app_state.loaded_chunk || app_state.loaded_volume) {
         draw_slice_viewer(ctx, "XY Slice Viewer", 0, 520, 10);
         draw_slice_viewer(ctx, "XZ Slice Viewer", 1, 830, 10);
         draw_slice_viewer(ctx, "YZ Slice Viewer", 2, 520, 370);
@@ -735,8 +930,48 @@ static void frame(void) {
             // Regenerate mesh button
             nk_layout_row_dynamic(ctx, 30, 1);
             if (nk_button_label(ctx, "Regenerate Mesh")) {
-                mesh_free(&app_state.current_mesh);
-                app_state.current_mesh = generate_mesh_from_chunk(app_state.loaded_chunk, app_state.iso_threshold);
+                if (app_state.loaded_volume) {
+                    // Regenerate all volume meshes
+                    if (app_state.chunk_meshes) {
+                        for (int i = 0; i < app_state.num_chunk_meshes; i++) {
+                            mesh_free(&app_state.chunk_meshes[i]);
+                        }
+                        free(app_state.chunk_meshes);
+                        app_state.chunk_meshes = NULL;
+                        app_state.num_chunk_meshes = 0;
+                    }
+                    
+                    // Generate new meshes
+                    int total_chunks = app_state.loaded_volume->z * app_state.loaded_volume->y * app_state.loaded_volume->x;
+                    app_state.chunk_meshes = malloc(total_chunks * sizeof(mesh));
+                    app_state.num_chunk_meshes = 0;
+                    
+                    for (int z = 0; z < app_state.loaded_volume->z; z++) {
+                        for (int y = 0; y < app_state.loaded_volume->y; y++) {
+                            for (int x = 0; x < app_state.loaded_volume->x; x++) {
+                                int idx = z * app_state.loaded_volume->y * app_state.loaded_volume->x + 
+                                         y * app_state.loaded_volume->x + x;
+                                app_state.chunk_meshes[app_state.num_chunk_meshes] = 
+                                    generate_mesh_from_chunk(&app_state.loaded_volume->chunks[idx], app_state.iso_threshold);
+                                
+                                // Offset the mesh vertices
+                                mesh* m = &app_state.chunk_meshes[app_state.num_chunk_meshes];
+                                if (m->vertices && m->num_triangles > 0) {
+                                    for (int i = 0; i < m->num_triangles * 3; i++) {
+                                        m->vertices[i * 3 + 0] += x * CHUNK_LEN;
+                                        m->vertices[i * 3 + 1] += y * CHUNK_LEN;
+                                        m->vertices[i * 3 + 2] += z * CHUNK_LEN;
+                                    }
+                                    app_state.num_chunk_meshes++;
+                                }
+                            }
+                        }
+                    }
+                } else if (app_state.loaded_chunk) {
+                    // Regenerate single chunk mesh
+                    mesh_free(&app_state.current_mesh);
+                    app_state.current_mesh = generate_mesh_from_chunk(app_state.loaded_chunk, app_state.iso_threshold);
+                }
             }
             
             // Rotation controls
@@ -786,7 +1021,7 @@ static void frame(void) {
     }
 
     // Render 3D view to texture first
-    if (app_state.loaded_chunk && app_state.render_3d_created) {
+    if ((app_state.loaded_chunk || app_state.loaded_volume) && app_state.render_3d_created) {
         render_3d_view();
         
         // Render to texture
@@ -831,7 +1066,20 @@ static void cleanup(void) {
         chunk_free(app_state.loaded_chunk);
     }
     
-    // Clean up mesh
+    // Clean up loaded volume
+    if (app_state.loaded_volume) {
+        volume_free(app_state.loaded_volume);
+    }
+    
+    // Clean up chunk meshes
+    if (app_state.chunk_meshes) {
+        for (int i = 0; i < app_state.num_chunk_meshes; i++) {
+            mesh_free(&app_state.chunk_meshes[i]);
+        }
+        free(app_state.chunk_meshes);
+    }
+    
+    // Clean up single mesh
     mesh_free(&app_state.current_mesh);
     
     // Clean up textures
@@ -858,18 +1106,28 @@ static void cleanup(void) {
 
 static void input(const sapp_event* event) {
     // Handle slice navigation based on active view
-    if (event->type == SAPP_EVENTTYPE_KEY_DOWN && app_state.loaded_chunk) {
+    if (event->type == SAPP_EVENTTYPE_KEY_DOWN && (app_state.loaded_chunk || app_state.loaded_volume)) {
         bool update_needed = false;
+        
+        // Determine max slice based on volume or chunk
+        int max_slice = CHUNK_LEN;
+        if (app_state.loaded_volume) {
+            switch (app_state.active_view) {
+                case 0: max_slice = app_state.loaded_volume->z * CHUNK_LEN; break;
+                case 1: max_slice = app_state.loaded_volume->y * CHUNK_LEN; break;
+                case 2: max_slice = app_state.loaded_volume->x * CHUNK_LEN; break;
+            }
+        }
         
         if (event->key_code == SAPP_KEYCODE_RIGHT) {
             // Go to next slice (wrap around)
             app_state.current_slice[app_state.active_view] = 
-                (app_state.current_slice[app_state.active_view] + 1) % CHUNK_LEN;
+                (app_state.current_slice[app_state.active_view] + 1) % max_slice;
             update_needed = true;
         } else if (event->key_code == SAPP_KEYCODE_LEFT) {
             // Go to previous slice (wrap around)
             app_state.current_slice[app_state.active_view] = 
-                (app_state.current_slice[app_state.active_view] - 1 + CHUNK_LEN) % CHUNK_LEN;
+                (app_state.current_slice[app_state.active_view] - 1 + max_slice) % max_slice;
             update_needed = true;
         } else if (event->key_code == SAPP_KEYCODE_TAB) {
             // Tab to cycle through views

@@ -181,3 +181,50 @@ zarrinfo zarr_parse_zarray(const char* json_string) {
 
     return info;
 }
+
+volume* zarr_read_volume(char* path, zarrinfo metadata, s32 z_start, s32 y_start, s32 x_start, s32 z_chunks, s32 y_chunks, s32 x_chunks) {
+    volume* vol = volume_new(z_chunks, y_chunks, x_chunks);
+    if (!vol) {
+        LOG_ERROR("Failed to allocate volume\n");
+        return NULL;
+    }
+    
+    // Load each chunk in the volume
+    for (s32 z = 0; z < z_chunks; z++) {
+        for (s32 y = 0; y < y_chunks; y++) {
+            for (s32 x = 0; x < x_chunks; x++) {
+                // Build chunk path based on zarr format
+                char chunk_path[1024];
+                s32 chunk_z = z_start + z;
+                s32 chunk_y = y_start + y;
+                s32 chunk_x = x_start + x;
+                
+                if (metadata.dimension_separator == '/') {
+                    snprintf(chunk_path, sizeof(chunk_path), "%s/%d/%d/%d", 
+                            path, chunk_z, chunk_y, chunk_x);
+                } else {
+                    snprintf(chunk_path, sizeof(chunk_path), "%s/%d%c%d%c%d", 
+                            path, chunk_z, metadata.dimension_separator, 
+                            chunk_y, metadata.dimension_separator, chunk_x);
+                }
+                
+                // Load the chunk
+                chunk* ch = zarr_read_chunk(chunk_path, metadata);
+                if (ch) {
+                    // Copy chunk data into volume
+                    s32 idx = z * y_chunks * x_chunks + y * x_chunks + x;
+                    memcpy(&vol->chunks[idx], ch, sizeof(chunk));
+                    chunk_free(ch);
+                    LOG_INFO("Loaded chunk [%d,%d,%d] from %s\n", chunk_z, chunk_y, chunk_x, chunk_path);
+                } else {
+                    LOG_WARN("Failed to load chunk [%d,%d,%d] from %s\n", chunk_z, chunk_y, chunk_x, chunk_path);
+                    // Fill with zeros (or fill_value)
+                    s32 idx = z * y_chunks * x_chunks + y * x_chunks + x;
+                    memset(&vol->chunks[idx], metadata.fill_value, sizeof(chunk));
+                }
+            }
+        }
+    }
+    
+    return vol;
+}

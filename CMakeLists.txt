@@ -5,7 +5,7 @@ project(vcr C)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_compile_options(-O0)
+    add_compile_options(-Og)
     add_compile_definitions(DEBUG)
 else ()
     add_compile_options(-O2)

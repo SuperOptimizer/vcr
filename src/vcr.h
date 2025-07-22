@@ -107,9 +107,41 @@ char* read_file(const char* filepath);
 static inline chunk* chunk_new() {return malloc(CHUNK_LEN*CHUNK_LEN*CHUNK_LEN);}
 static inline void chunk_free(chunk* c){free(c);}
 
+// volume
+static inline volume* volume_new(s32 z, s32 y, s32 x) {
+    volume* v = malloc(sizeof(volume));
+    v->z = z;
+    v->y = y;
+    v->x = x;
+    v->chunks = calloc(z * y * x, sizeof(chunk));
+    return v;
+}
+static inline void volume_free(volume* v) {
+    if (v) {
+        free(v->chunks);
+        free(v);
+    }
+}
+
+// image
+static inline image* image_new(s32 y, s32 x) {
+    image* img = malloc(sizeof(image));
+    img->y = y;
+    img->x = x;
+    img->slices = calloc(y * x, sizeof(slice));
+    return img;
+}
+static inline void image_free(image* img) {
+    if (img) {
+        free(img->slices);
+        free(img);
+    }
+}
+
 // zarr
 zarrinfo zarr_parse_zarray(const char* json_string);
 chunk* zarr_read_chunk(char* path, zarrinfo metadata);
+volume* zarr_read_volume(char* path, zarrinfo metadata, s32 z_start, s32 y_start, s32 x_start, s32 z_chunks, s32 y_chunks, s32 x_chunks);
 
 // mesh structure for marching cubes output
 typedef struct mesh {
@@ -120,6 +152,7 @@ typedef struct mesh {
 
 // marching cubes
 mesh generate_mesh_from_chunk(const chunk* volume_data, u8 iso_threshold);
+mesh generate_mesh_from_volume(const volume* vol, u8 iso_threshold);
 void mesh_free(mesh* m);
 
 // color types
